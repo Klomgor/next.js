@@ -10,7 +10,7 @@ use napi::{
 };
 use serde::Serialize;
 use turbo_tasks::{
-    trace::TraceRawVcs, ReadRef, TaskId, TryJoinIterExt, TurboTasks, UpdateInfo, Vc,
+    trace::TraceRawVcs, OperationVc, ReadRef, TaskId, TryJoinIterExt, TurboTasks, UpdateInfo, Vc,
 };
 use turbo_tasks_backend::{default_backing_storage, DefaultBackingStorage};
 use turbo_tasks_fs::FileContent;
@@ -127,6 +127,27 @@ pub fn create_turbo_tasks(
     memory_limit: usize,
 ) -> Result<NextTurboTasks> {
     Ok(if persistent_caching {
+        let dirty_suffix = if crate::build::GIT_CLEAN
+            || option_env!("CI").is_some_and(|value| !value.is_empty())
+        {
+            ""
+        } else {
+            "-dirty"
+        };
+        #[allow(
+            clippy::const_is_empty,
+            reason = "LAST_TAG might be empty if the tag can't be determined"
+        )]
+        let version_info = if crate::build::LAST_TAG.is_empty() {
+            format!("{}{}", crate::build::SHORT_COMMIT, dirty_suffix)
+        } else {
+            format!(
+                "{}-{}{}",
+                crate::build::LAST_TAG,
+                crate::build::SHORT_COMMIT,
+                dirty_suffix
+            )
+        };
         NextTurboTasks::PersistentCaching(TurboTasks::new(
             turbo_tasks_backend::TurboTasksBackend::new(
                 turbo_tasks_backend::BackendOptions {
@@ -137,7 +158,7 @@ pub fn create_turbo_tasks(
                     }),
                     ..Default::default()
                 },
-                default_backing_storage(&output_path.join("cache/turbopack"))?,
+                default_backing_storage(&output_path.join("cache/turbopack"), &version_info)?,
             ),
         ))
     } else {
@@ -208,7 +229,7 @@ pub fn root_task_dispose(
     Ok(())
 }
 
-pub async fn get_issues<T: Send>(source: Vc<T>) -> Result<Arc<Vec<ReadRef<PlainIssue>>>> {
+pub async fn get_issues<T: Send>(source: OperationVc<T>) -> Result<Arc<Vec<ReadRef<PlainIssue>>>> {
     let issues = source.peek_issues_with_path().await?;
     Ok(Arc::new(issues.get_plain_issues().await?))
 }
@@ -217,7 +238,9 @@ pub async fn get_issues<T: Send>(source: Vc<T>) -> Result<Arc<Vec<ReadRef<PlainI
 /// by the given source and returns it as a
 /// [turbopack_core::diagnostics::PlainDiagnostic]. It does
 /// not consume any Diagnostics held by the source.
-pub async fn get_diagnostics<T: Send>(source: Vc<T>) -> Result<Arc<Vec<ReadRef<PlainDiagnostic>>>> {
+pub async fn get_diagnostics<T: Send>(
+    source: OperationVc<T>,
+) -> Result<Arc<Vec<ReadRef<PlainDiagnostic>>>> {
     let captured_diags = source.peek_diagnostics().await?;
     let mut diags = captured_diags
         .diagnostics
